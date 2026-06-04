@@ -523,22 +523,41 @@ const LS_KEY='eczeem_v1';
 function lsLoad(){try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r):null;}catch{return null;}}
 function lsSave(d){try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}}
 
+// ── SyncBanner ────────────────────────────────────────────────────────────────
+function SyncBanner({err}){
+  const isRules=err&&(err.includes('permission')||err.includes('PERMISSION')||err.includes('Missing'));
+  return (
+    <div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',padding:'10px 16px',fontSize:12,fontWeight:700,color:'#92400E',lineHeight:1.6}}>
+      ⚠️ Sync met partner werkt niet.{' '}
+      {isRules
+        ? <>Fix: open <a href="https://console.firebase.google.com/project/eczeem-tracker/firestore/rules" target="_blank" rel="noreferrer" style={{color:'#92400E'}}>Firebase Console → Firestore Rules</a> en vervang de inhoud door:<br/>
+          <code style={{display:'block',background:'#FDE68A',borderRadius:6,padding:'4px 8px',marginTop:4,fontFamily:'monospace',whiteSpace:'pre',fontSize:11}}>{'rules_version = \'2\';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if true;\n    }\n  }\n}'}</code>
+          Klik daarna op Publiceren.</>
+        : <>Fout: {err}. Controleer je internetverbinding en herlaad.</>
+      }
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App(){
   const [data,setData]=useState(()=>lsLoad()||INIT());
   const [tab,setTab]=useState('vandaag');
+  const [syncErr,setSyncErr]=useState(null);
+  const [synced,setSynced]=useState(false);
   useEffect(()=>{
     if(!IS_CONFIGURED||!DOC){return;}
     const unsub=DOC.onSnapshot(snap=>{
+      setSyncErr(null);setSynced(true);
       if(snap.exists()){const d=snap.data();lsSave(d);setData(d);}
-      else{const init=lsLoad()||INIT();DOC.set(init).catch(console.error);}
-    },err=>console.warn('Firestore niet beschikbaar, werkt offline:',err));
+      else{const init=lsLoad()||INIT();DOC.set(init).catch(e=>setSyncErr(e.message));}
+    },err=>{setSyncErr(err.message||'Onbekende fout');console.warn('Firestore:',err);});
     return unsub;
   },[]);
   const upd=fn=>setData(prev=>{
     const next=fn(prev);
     lsSave(next);
-    if(DOC)DOC.set(next).catch(console.error);
+    if(DOC)DOC.set(next).catch(e=>setSyncErr(e.message));
     return next;
   });
   if(!data.setupDone) return <div className="app"><SetupView data={data} upd={upd}/></div>;
@@ -546,9 +565,13 @@ function App(){
     <div className="app">
       <header className="hdr">
         <div className="hdr-eye">Eczeem smeerapp</div>
-        <div className="hdr-name">💙 {data.settings.kindnaam}</div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div className="hdr-name">💙 {data.settings.kindnaam}</div>
+          <div title={syncErr||'Gesynchroniseerd'} style={{width:10,height:10,borderRadius:'50%',background:syncErr?'#EF4444':synced?'#22C55E':'#F59E0B',flexShrink:0,marginLeft:8}}/>
+        </div>
         <div className="hdr-date">{fmtDate(today())}</div>
       </header>
+      {syncErr&&<SyncBanner err={syncErr}/>}
       <main className="main">
         {tab==='vandaag'&&<VandaagView data={data} upd={upd}/>}
         {tab==='schema' &&<SchemaView  data={data} upd={upd}/>}
