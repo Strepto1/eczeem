@@ -98,7 +98,7 @@ function shouldApply(pd){if(!pd)return false;const d=diffDays(pd.weekStartedAt||
 const pF=w=>!w||w<=2?'#E76F51':w<=4?'#F4A261':'#E9C46A';
 const pS=w=>!w||w<=2?'#B84A24':w<=4?'#C87A30':'#B89020';
 const SK='#EDE0D4',ST='#C4AD9E';
-const INIT=()=>({settings:{kindnaam:'',medicinzalf:'',gebruiker1:'Papa',gebruiker2:'Mama',contactNaDagen:14},log:{},plekken:{},spotCounter:0,setupDone:false});
+const INIT=()=>({settings:{kindnaam:'',medicinzalf:'',gebruiker1:'Papa',gebruiker2:'Mama',contactNaDagen:14},log:{},plekken:{},spotCounter:0,setupDone:false,updatedAt:null});
 
 // ── Firebase setup scherm ─────────────────────────────────────────────────────
 function FirebaseSetup(){
@@ -507,6 +507,12 @@ function InfoView({data,upd}){
       </div>
       <button className={`save-btn ${ok?'ok':''}`} onClick={doSave}>{ok?'✓ Opgeslagen!':'Opslaan'}</button>
       <button className="reset-btn" onClick={doReset}>Alles resetten</button>
+      <button className="reset-btn" onClick={()=>{
+        if(window.confirm('Uitloggen op dit apparaat? De gedeelde Firebase-data blijft bestaan.')){
+          localStorage.removeItem(LS_KEY);
+          firebase.auth().signOut();
+        }
+      }}>Uitloggen op dit apparaat</button>
       <div className="card" style={{background:'#EDE3D9',boxShadow:'none'}}>
         <div className="ct">Afbouwschema</div>
         <div style={{fontSize:12,color:'#6B8888',lineHeight:2.1,fontWeight:600}}>
@@ -524,6 +530,53 @@ function InfoView({data,upd}){
 const LS_KEY='eczeem_v1';
 function lsLoad(){try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r):null;}catch{return null;}}
 function lsSave(d){try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}}
+
+
+// ── Sync helpers: voorkom dat een browser met oude lokale state andere wijzigingen overschrijft ──
+function isPlainObject(v){
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+function deepEqual(a,b){
+  if(a===b)return true;
+  if(!isPlainObject(a)||!isPlainObject(b))return false;
+  const ak=Object.keys(a),bk=Object.keys(b);
+  if(ak.length!==bk.length)return false;
+  return ak.every(k=>Object.prototype.hasOwnProperty.call(b,k)&&deepEqual(a[k],b[k]));
+}
+function reconcileRemote(remote,oldState,newState){
+  // oldState = wat deze browser dacht dat de data was
+  // newState = oldState plus de net gemaakte wijziging
+  // remote   = nieuwste Firestore-data
+  // Resultaat: behoud remote-wijzigingen van andere browsers, maar pas deze lokale wijziging toe.
+  if(deepEqual(oldState,newState))return remote;
+  if(!isPlainObject(oldState)||!isPlainObject(newState))return newState;
+
+  const out=isPlainObject(remote)?{...remote}:{};
+  const keys=new Set([...Object.keys(oldState||{}),...Object.keys(newState||{})]);
+
+  keys.forEach(k=>{
+    const oldHas=Object.prototype.hasOwnProperty.call(oldState,k);
+    const newHas=Object.prototype.hasOwnProperty.call(newState,k);
+    const oldVal=oldState?oldState[k]:undefined;
+    const newVal=newState?newState[k]:undefined;
+    const remoteVal=isPlainObject(remote)?remote[k]:undefined;
+
+    if(!newHas && oldHas){
+      delete out[k];
+    } else if(!oldHas && newHas){
+      out[k]=newVal;
+    } else if(deepEqual(oldVal,newVal)){
+      // Deze browser veranderde dit veld niet: behoud nieuwste Firestore-waarde.
+      if(isPlainObject(remote) && Object.prototype.hasOwnProperty.call(remote,k)) out[k]=remoteVal;
+    } else if(isPlainObject(oldVal)&&isPlainObject(newVal)){
+      out[k]=reconcileRemote(remoteVal,oldVal,newVal);
+    } else {
+      out[k]=newVal;
+    }
+  });
+
+  return out;
+}
 
 const AUTH_EMAIL='familie@eczeem.app';
 
@@ -596,7 +649,9 @@ function PinLogin(){
 // ── App ───────────────────────────────────────────────────────────────────────
 function App(){
   const [user,setUser]=useState(undefined);
-  const [data,setData]=useState(()=>lsLoad()||INIT());
+  // Belangrijk: localStorage is alleen cache. Firestore is de bron van waarheid.
+  // Begin met null zodat een nieuw device niet eerst lege lokale data kan tonen en overschrijven.
+  const [data,setData]=useState(null);
   const [tab,setTab]=useState('vandaag');
   const [synced,setSynced]=useState(false);
 
@@ -607,24 +662,61 @@ function App(){
 
   useEffect(()=>{
     if(!user||!DOC)return;
+    setSynced(false);
     const unsub=DOC.onSnapshot(snap=>{
       setSynced(true);
-      if(snap.exists()){const d=snap.data();lsSave(d);setData(d);}
-      else{const init=lsLoad()||INIT();DOC.set(init).catch(console.error);}
-    },err=>console.warn('Firestore:',err));
+      if(snap.exists()){
+        const d=snap.data();
+        lsSave(d);
+        setData(d);
+      } else {
+        // Nooit automatisch lokale data naar Firebase pushen vanaf een nieuw device.
+        // Schrijven gebeurt pas na setup of een bewuste wijziging door de gebruiker.
+        setData(INIT());
+      }
+    },err=>{
+      console.error('Firestore lezen mislukt:',err);
+      alert('Firebase lezen mislukt: '+err.message);
+      // Alleen als noodfallback tonen we lokale cache; niet automatisch terugschrijven.
+      setData(lsLoad()||INIT());
+    });
     return unsub;
   },[user]);
 
   const upd=fn=>setData(prev=>{
-    const next=fn(prev);
-    lsSave(next);
-    if(DOC&&user)DOC.set(next).catch(console.error);
-    return next;
+    if(!prev)return prev;
+
+    // Bereken de lokale wijziging één keer. Sommige updates maken een nieuw id met Date.now();
+    // daarom mag fn niet opnieuw worden uitgevoerd binnen de Firebase-transaction.
+    const localNext={...fn(prev),updatedAt:new Date().toISOString()};
+    lsSave(localNext);
+
+    if(DOC&&user){
+      DOC.firestore.runTransaction(async tx=>{
+        const snap=await tx.get(DOC);
+        const remote=snap.exists?snap.data():INIT();
+        const merged={...reconcileRemote(remote,prev,localNext),updatedAt:new Date().toISOString()};
+        tx.set(DOC,merged);
+        return merged;
+      }).then(merged=>{
+        lsSave(merged);
+        setData(merged);
+      }).catch(e=>{
+        console.error('Firebase opslaan mislukt:',e);
+        alert('Firebase opslaan mislukt: '+e.message);
+      });
+    } else {
+      alert('Niet opgeslagen naar Firebase: geen actieve login.');
+    }
+
+    // Optimistisch tonen; de onSnapshot of transaction-resultaat zet daarna de definitieve Firebase-state.
+    return localNext;
   });
 
   if(!IS_CONFIGURED) return <div className="app"><FirebaseSetup/></div>;
   if(user===undefined) return <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100svh',background:'#F4EDE5',fontFamily:'Nunito,sans-serif',color:'#AABEBE',fontWeight:700,gap:10}}><span style={{fontSize:40}}>💙</span><span>Laden…</span></div>;
   if(!user) return <PinLogin/>;
+  if(!data) return <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100svh',background:'#F4EDE5',fontFamily:'Nunito,sans-serif',color:'#AABEBE',fontWeight:700,gap:10}}><span style={{fontSize:40}}>💙</span><span>Gegevens laden…</span></div>;
   if(!data.setupDone) return <div className="app"><SetupView data={data} upd={upd}/></div>;
   return (
     <div className="app">
