@@ -540,7 +540,7 @@ function PinLogin(){
     try{
       await auth.signInWithEmailAndPassword(AUTH_EMAIL,code);
     }catch(e){
-      if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'||e.code==='auth/invalid-email'){
+      if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'||e.code==='auth/invalid-login-credentials'||e.code==='auth/invalid-email'){
         try{
           await auth.createUserWithEmailAndPassword(AUTH_EMAIL,code);
         }catch(e2){
