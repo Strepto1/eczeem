@@ -73,6 +73,7 @@ if (IS_CONFIGURED) {
   try {
     firebase.initializeApp(FIREBASE_CONFIG);
     const db = firebase.firestore();
+    db.enablePersistence({synchronizeTabs:true}).catch(()=>{});
     DOC = db.collection('eczeem').doc('familie');
   } catch(e){ console.error('Firebase init:', e); }
 }
@@ -664,7 +665,7 @@ function App(){
     setSynced(false);
     const unsub=DOC.onSnapshot(snap=>{
       setSynced(true);
-      if(snap.exists()){
+      if(snap.exists){
         const d=snap.data();
         lsSave(d);
         setData(d);
