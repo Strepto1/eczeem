@@ -11,6 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet"/>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
@@ -104,12 +105,13 @@ function FirebaseSetup(){
   const steps=[
     'Ga naar console.firebase.google.com en log in met een Google-account',
     'Klik op "Nieuw project aanmaken" en volg de stappen (Analytics mag uit)',
-    'Ga naar Firestore Database (linkermenu) → Create database → kies Start in test mode',
+    'Ga naar Firestore Database (linkermenu) → Create database → Start in production mode → kies een regio',
+    'Vervang in Firestore Rules de inhoud door het onderstaande en klik Publiceren:\nrules_version = \'2\';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}',
+    'Ga naar Authentication (linkermenu) → Sign-in method → Email/wachtwoord → zet aan → Opslaan',
     'Ga naar Projectinstellingen (⚙️ linksboven) → tabblad "Algemeen" → scroll naar "Jouw apps"',
     'Klik op het web-icoon </> → geef de app een naam → kopieer het firebaseConfig object',
-    'Open eczeem-smeerapp.html in een teksteditor (VS Code, Notepad++, TextEdit)',
-    'Zoek op JOUW_API_KEY en vervang de volledige FIREBASE_CONFIG met jouw gekopieerde config',
-    'Sla op → open het bestand opnieuw in de browser → klaar!',
+    'Open index.html in een teksteditor → zoek JOUW_API_KEY → vervang de volledige FIREBASE_CONFIG',
+    'Sla op → open de app → kies een familiecode (minimaal 8 tekens) → deel met je partner',
   ];
   return (
     <div className="setup">
@@ -523,43 +525,106 @@ const LS_KEY='eczeem_v1';
 function lsLoad(){try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r):null;}catch{return null;}}
 function lsSave(d){try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}}
 
-// ── SyncBanner ────────────────────────────────────────────────────────────────
-function SyncBanner({err}){
-  const isRules=err&&(err.includes('permission')||err.includes('PERMISSION')||err.includes('Missing'));
-  return (
-    <div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',padding:'10px 16px',fontSize:12,fontWeight:700,color:'#92400E',lineHeight:1.6}}>
-      ⚠️ Sync met partner werkt niet.{' '}
-      {isRules
-        ? <>Fix: open <a href="https://console.firebase.google.com/project/eczeem-tracker/firestore/rules" target="_blank" rel="noreferrer" style={{color:'#92400E'}}>Firebase Console → Firestore Rules</a> en vervang de inhoud door:<br/>
-          <code style={{display:'block',background:'#FDE68A',borderRadius:6,padding:'4px 8px',marginTop:4,fontFamily:'monospace',whiteSpace:'pre',fontSize:11}}>{'rules_version = \'2\';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if true;\n    }\n  }\n}'}</code>
-          Klik daarna op Publiceren.</>
-        : <>Fout: {err}. Controleer je internetverbinding en herlaad.</>
+const AUTH_EMAIL='familie@eczeem.app';
+
+// ── PinLogin ──────────────────────────────────────────────────────────────────
+function PinLogin(){
+  const [code,setCode]=useState('');
+  const [bezig,setBezig]=useState(false);
+  const [fout,setFout]=useState('');
+
+  const login=async()=>{
+    if(code.length<6){setFout('Familiecode moet minimaal 6 tekens zijn.');return;}
+    setBezig(true);setFout('');
+    const auth=firebase.auth();
+    try{
+      await auth.signInWithEmailAndPassword(AUTH_EMAIL,code);
+    }catch(e){
+      if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'||e.code==='auth/invalid-email'){
+        try{
+          await auth.createUserWithEmailAndPassword(AUTH_EMAIL,code);
+        }catch(e2){
+          if(e2.code==='auth/email-already-in-use'){
+            setFout('Verkeerde familiecode. Vraag je partner welke code zij hebben gekozen.');
+          }else if(e2.code==='auth/weak-password'){
+            setFout('Familiecode te kort — minimaal 6 tekens.');
+          }else if(e2.code==='auth/configuration-not-found'||e2.code==='auth/operation-not-allowed'){
+            setFout('E-mail/wachtwoord login is niet ingeschakeld in Firebase. Ga naar Authentication → Sign-in method → Email/wachtwoord → Zet aan.');
+          }else{
+            setFout('Fout: '+e2.message);
+          }
+        }
+      }else if(e.code==='auth/wrong-password'){
+        setFout('Verkeerde familiecode. Vraag je partner welke code zij hebben gekozen.');
+      }else if(e.code==='auth/configuration-not-found'||e.code==='auth/operation-not-allowed'){
+        setFout('E-mail/wachtwoord login is niet ingeschakeld in Firebase. Ga naar Authentication → Sign-in method → Email/wachtwoord → Zet aan.');
+      }else{
+        setFout('Fout: '+e.message);
       }
+    }
+    setBezig(false);
+  };
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'100svh',background:'#F4EDE5',padding:28,fontFamily:'Nunito,sans-serif'}}>
+      <div style={{fontSize:40,marginBottom:8}}>💙</div>
+      <div style={{fontSize:22,fontWeight:900,color:'#2D3838',marginBottom:6}}>Eczeem Smeerapp</div>
+      <div style={{fontSize:13,fontWeight:600,color:'#6B8888',marginBottom:28,textAlign:'center',lineHeight:1.5}}>
+        Voer de familiecode in.<br/>Beide ouders gebruiken dezelfde code.
+      </div>
+      <input
+        type="password"
+        placeholder="Familiecode (min. 6 tekens)"
+        value={code}
+        onChange={e=>setCode(e.target.value)}
+        onKeyDown={e=>e.key==='Enter'&&login()}
+        style={{width:'100%',maxWidth:320,padding:'14px 16px',borderRadius:14,border:'2px solid #D4C8BE',fontSize:16,fontFamily:'Nunito,sans-serif',fontWeight:700,outline:'none',marginBottom:12,background:'white'}}
+      />
+      {fout&&<div style={{color:'#c0392b',fontSize:12,fontWeight:700,marginBottom:10,maxWidth:320,textAlign:'center',lineHeight:1.5}}>{fout}</div>}
+      <button
+        onClick={login}
+        disabled={bezig}
+        style={{width:'100%',maxWidth:320,padding:'14px',borderRadius:14,border:'none',background:'#2A9D8F',color:'white',fontSize:16,fontWeight:900,fontFamily:'Nunito,sans-serif',cursor:bezig?'not-allowed':'pointer',opacity:bezig?.7:1}}
+      >{bezig?'Bezig…':'Inloggen / aanmaken'}</button>
+      <div style={{marginTop:20,fontSize:11,color:'#AABEBE',fontWeight:600,textAlign:'center',maxWidth:300,lineHeight:1.6}}>
+        Eerste keer? Kies zelf een code en deel hem met je partner. De code wordt opgeslagen in Firebase.
+      </div>
     </div>
   );
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App(){
+  const [user,setUser]=useState(undefined);
   const [data,setData]=useState(()=>lsLoad()||INIT());
   const [tab,setTab]=useState('vandaag');
-  const [syncErr,setSyncErr]=useState(null);
   const [synced,setSynced]=useState(false);
+
   useEffect(()=>{
-    if(!IS_CONFIGURED||!DOC){return;}
-    const unsub=DOC.onSnapshot(snap=>{
-      setSyncErr(null);setSynced(true);
-      if(snap.exists()){const d=snap.data();lsSave(d);setData(d);}
-      else{const init=lsLoad()||INIT();DOC.set(init).catch(e=>setSyncErr(e.message));}
-    },err=>{setSyncErr(err.message||'Onbekende fout');console.warn('Firestore:',err);});
-    return unsub;
+    if(!IS_CONFIGURED)return;
+    return firebase.auth().onAuthStateChanged(u=>setUser(u||null));
   },[]);
+
+  useEffect(()=>{
+    if(!user||!DOC)return;
+    const unsub=DOC.onSnapshot(snap=>{
+      setSynced(true);
+      if(snap.exists()){const d=snap.data();lsSave(d);setData(d);}
+      else{const init=lsLoad()||INIT();DOC.set(init).catch(console.error);}
+    },err=>console.warn('Firestore:',err));
+    return unsub;
+  },[user]);
+
   const upd=fn=>setData(prev=>{
     const next=fn(prev);
     lsSave(next);
-    if(DOC)DOC.set(next).catch(e=>setSyncErr(e.message));
+    if(DOC&&user)DOC.set(next).catch(console.error);
     return next;
   });
+
+  if(!IS_CONFIGURED) return <div className="app"><FirebaseSetup/></div>;
+  if(user===undefined) return <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100svh',background:'#F4EDE5',fontFamily:'Nunito,sans-serif',color:'#AABEBE',fontWeight:700,gap:10}}><span style={{fontSize:40}}>💙</span><span>Laden…</span></div>;
+  if(!user) return <PinLogin/>;
   if(!data.setupDone) return <div className="app"><SetupView data={data} upd={upd}/></div>;
   return (
     <div className="app">
@@ -567,11 +632,10 @@ function App(){
         <div className="hdr-eye">Eczeem smeerapp</div>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div className="hdr-name">💙 {data.settings.kindnaam}</div>
-          <div title={syncErr||'Gesynchroniseerd'} style={{width:10,height:10,borderRadius:'50%',background:syncErr?'#EF4444':synced?'#22C55E':'#F59E0B',flexShrink:0,marginLeft:8}}/>
+          <div title={synced?'Gesynchroniseerd':'Verbinden…'} style={{width:10,height:10,borderRadius:'50%',background:synced?'#22C55E':'#F59E0B',flexShrink:0,marginLeft:8}}/>
         </div>
         <div className="hdr-date">{fmtDate(today())}</div>
       </header>
-      {syncErr&&<SyncBanner err={syncErr}/>}
       <main className="main">
         {tab==='vandaag'&&<VandaagView data={data} upd={upd}/>}
         {tab==='schema' &&<SchemaView  data={data} upd={upd}/>}
