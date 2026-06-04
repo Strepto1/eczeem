@@ -518,33 +518,29 @@ function InfoView({data,upd}){
   );
 }
 
+// ── LocalStorage helpers ──────────────────────────────────────────────────────
+const LS_KEY='eczeem_v1';
+function lsLoad(){try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r):null;}catch{return null;}}
+function lsSave(d){try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App(){
-  const [data,setData]=useState(null);
+  const [data,setData]=useState(()=>lsLoad()||INIT());
   const [tab,setTab]=useState('vandaag');
   useEffect(()=>{
-    if(!IS_CONFIGURED||!DOC){setData({_needsConfig:true});return;}
-    const timer=setTimeout(()=>setData(d=>d===null?{_fout:'Geen verbinding. Controleer internet en herlaad de pagina.'}:d),10000);
+    if(!IS_CONFIGURED||!DOC){return;}
     const unsub=DOC.onSnapshot(snap=>{
-      clearTimeout(timer);
-      if(snap.exists())setData(snap.data());
-      else{const init=INIT();DOC.set(init);setData(init);}
-    },err=>{
-      clearTimeout(timer);
-      console.error('Firestore:',err);
-      setData({_fout:err.message||'Verbinding met database mislukt.'});
-    });
-    return ()=>{clearTimeout(timer);unsub();};
+      if(snap.exists()){const d=snap.data();lsSave(d);setData(d);}
+      else{const init=lsLoad()||INIT();DOC.set(init).catch(console.error);}
+    },err=>console.warn('Firestore niet beschikbaar, werkt offline:',err));
+    return unsub;
   },[]);
   const upd=fn=>setData(prev=>{
-    if(!prev)return prev;
     const next=fn(prev);
+    lsSave(next);
     if(DOC)DOC.set(next).catch(console.error);
     return next;
   });
-  if(!data) return <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100svh',background:'#F4EDE5',fontFamily:'Nunito,sans-serif',color:'#AABEBE',fontWeight:700,gap:10}}><span style={{fontSize:40}}>💙</span><span>Laden…</span></div>;
-  if(data._fout) return <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100svh',background:'#F4EDE5',fontFamily:'Nunito,sans-serif',color:'#c0392b',fontWeight:700,gap:10,padding:24,textAlign:'center'}}><span style={{fontSize:40}}>⚠️</span><span>Fout</span><span style={{fontSize:14,fontWeight:400,color:'#555'}}>{data._fout}</span><button onClick={()=>window.location.reload()} style={{marginTop:12,padding:'10px 24px',background:'#AABEBE',color:'#fff',border:'none',borderRadius:12,fontFamily:'Nunito,sans-serif',fontWeight:700,fontSize:14,cursor:'pointer'}}>Opnieuw proberen</button></div>;
-  if(data._needsConfig) return <div className="app"><FirebaseSetup/></div>;
   if(!data.setupDone) return <div className="app"><SetupView data={data} upd={upd}/></div>;
   return (
     <div className="app">
